@@ -1,16 +1,11 @@
+import gleam/float
 import gleam/int
-import gleam/io
 import gleam/list
 import gleam/option.{Some}
 import gleam/regexp
-import gleam/string
 
 pub type Vector {
   Vector(x: Int, y: Int)
-}
-
-fn vector_add(a: Vector, b: Vector) -> Vector {
-  Vector(x: a.x + b.x, y: a.y + b.y)
 }
 
 pub type Machine {
@@ -51,52 +46,34 @@ pub fn parse(input: String) -> List(Machine) {
   })
 }
 
-fn solve_inner(
-  location: Vector,
-  machine: Machine,
-  count: Int,
-) -> Result(Int, Nil) {
-  location |> io.debug
-  count |> io.debug
-  let oof = count >= 100
-  case oof {
-    True -> Error(Nil)
-    False -> {
-      let found_prize =
-        location.x == machine.prize.x && location.y == machine.prize.y
-      let oob = location.x > machine.prize.x || location.y > machine.prize.y
-      case found_prize, oob {
-        True, _ -> Ok(0)
-        _, True -> Error(Nil)
-        False, False -> {
-          let a_result =
-            solve_inner(
-              location |> vector_add(machine.button_a),
-              machine,
-              count + 1,
-            )
-          let b_result =
-            solve_inner(
-              location |> vector_add(machine.button_b),
-              machine,
-              count + 1,
-            )
+fn is_int(num: Float) -> Result(Int, Nil) {
+  let as_int = num |> float.round
 
-          case a_result, b_result {
-            Error(_), Error(_) -> Error(Nil)
-            Ok(cost_a), Error(_) -> Ok(1 + cost_a)
-            Error(_), Ok(cost_b) -> Ok(3 + cost_b)
-            Ok(cost_a), Ok(cost_b) if cost_a > cost_b -> Ok(3 + cost_b)
-            Ok(cost_a), Ok(_) -> Ok(1 + cost_a)
-          }
-        }
-      }
-    }
+  let is_equal = num == { as_int |> int.to_float }
+
+  case is_equal {
+    True -> Ok(as_int)
+    False -> Error(Nil)
   }
 }
 
 fn solve(machine: Machine) -> Result(Int, Nil) {
-  solve_inner(Vector(x: 0, y: 0), machine, 0)
+  let button_a_x = machine.button_a.x |> int.to_float
+  let button_a_y = machine.button_a.y |> int.to_float
+  let button_b_x = machine.button_b.x |> int.to_float
+  let button_b_y = machine.button_b.y |> int.to_float
+  let prize_x = machine.prize.x |> int.to_float
+  let prize_y = machine.prize.y |> int.to_float
+
+  let times_b =
+    { button_a_y *. prize_x -. button_a_x *. prize_y }
+    /. { button_a_y *. button_b_x -. button_a_x *. button_b_y }
+  let times_a = { prize_x -. button_b_x *. times_b } /. button_a_x
+
+  case times_a |> is_int, times_b |> is_int {
+    Ok(a), Ok(b) -> Ok(a * 3 + b)
+    _, _ -> Error(Nil)
+  }
 }
 
 pub fn pt_1(input: List(Machine)) {
@@ -111,5 +88,20 @@ pub fn pt_1(input: List(Machine)) {
 }
 
 pub fn pt_2(input: List(Machine)) {
-  todo as "part 2 not implemented"
+  input
+  |> list.fold(0, fn(acc, machine) {
+    let result =
+      Machine(
+        ..machine,
+        prize: Vector(
+          x: machine.prize.x + 10_000_000_000_000,
+          y: machine.prize.y + 10_000_000_000_000,
+        ),
+      )
+      |> solve
+    case result {
+      Error(_) -> acc
+      Ok(cost) -> acc + cost
+    }
+  })
 }

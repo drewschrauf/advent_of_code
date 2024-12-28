@@ -1,5 +1,4 @@
 import gleam/dict.{type Dict}
-import gleam/io
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/result
@@ -12,6 +11,8 @@ pub type Position {
 pub type Entity {
   Wall
   Box
+  BoxLeft
+  BoxRight
   Empty
 }
 
@@ -121,10 +122,47 @@ fn update_map(
         |> set_entity(position, Empty),
       )
     }
+    BoxLeft | BoxRight -> {
+      case direction {
+        Left | Right -> {
+          let next_position = position |> relative_position(direction)
+          use update_result <- result.try(
+            map |> update_map(next_position, direction),
+          )
+          Ok(
+            update_result
+            |> set_entity(next_position, entity)
+            |> set_entity(position, Empty),
+          )
+        }
+        Up | Down -> {
+          let half = #(entity, position)
+          let other_half = case entity {
+            BoxLeft -> #(BoxRight, Position(..position, x: position.x + 1))
+            BoxRight -> #(BoxLeft, Position(..position, x: position.x - 1))
+            _ -> panic
+          }
+          [half, other_half]
+          |> list.fold(Ok(map), fn(acc, box_half) {
+            let #(entity, position) = box_half
+            use map <- result.try(acc)
+            let next_position = box_half.1 |> relative_position(direction)
+            use update_result <- result.try(
+              map |> update_map(next_position, direction),
+            )
+            Ok(
+              update_result
+              |> set_entity(next_position, entity)
+              |> set_entity(position, Empty),
+            )
+          })
+        }
+      }
+    }
   }
 }
 
-fn move_robot(scenario: Scenario) -> Map {
+fn follow_instructions(scenario: Scenario) -> Map {
   let Scenario(map:, robot:, instructions:) = scenario
 
   case instructions {
@@ -138,28 +176,55 @@ fn move_robot(scenario: Scenario) -> Map {
           Scenario(map: next_map, robot: next_position, instructions:)
         Error(_) -> Scenario(map:, robot:, instructions:)
       }
-      |> move_robot
+      |> follow_instructions
     }
   }
 }
 
-fn calculate_coords(map: Map) -> Int {
+fn calculate_gps_result(map: Map) -> Int {
   map
   |> dict.fold(0, fn(acc, row_index, row) {
     acc
     + dict.fold(row, 0, fn(acc, column_index, column) {
       case column {
-        Box -> acc + 100 * row_index + column_index
+        Box | BoxLeft -> acc + 100 * row_index + column_index
         _ -> acc
       }
     })
   })
 }
 
+fn double_scenario(scenario: Scenario) -> Scenario {
+  let new_map =
+    scenario.map
+    |> dict.fold(dict.new(), fn(acc, row_index, row) {
+      acc
+      |> dict.insert(
+        row_index,
+        row
+          |> dict.fold(dict.new(), fn(acc, column_index, column) {
+            let new_entries = case column {
+              Wall -> #(Wall, Wall)
+              Empty -> #(Empty, Empty)
+              Box -> #(BoxLeft, BoxRight)
+              _ -> panic
+            }
+            acc
+            |> dict.insert(column_index * 2, new_entries.0)
+            |> dict.insert(column_index * 2 + 1, new_entries.1)
+          }),
+      )
+    })
+
+  let new_robot = Position(..scenario.robot, x: scenario.robot.x * 2)
+
+  Scenario(..scenario, map: new_map, robot: new_robot)
+}
+
 pub fn pt_1(input: Scenario) {
-  input |> move_robot |> calculate_coords
+  input |> follow_instructions |> calculate_gps_result
 }
 
 pub fn pt_2(input: Scenario) {
-  todo as "part 2 not implemented"
+  input |> double_scenario |> follow_instructions |> calculate_gps_result
 }

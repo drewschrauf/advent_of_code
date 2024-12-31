@@ -1,9 +1,8 @@
-import gleam/bool
 import gleam/dict.{type Dict}
 import gleam/int
-import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/set.{type Set}
 import gleam/string
 
@@ -31,7 +30,7 @@ pub type Map =
   Dict(Int, Dict(Int, Entity))
 
 pub type Scenario {
-  Scenario(reindeer: Vector, map: Map, end: Position)
+  Scenario(map: Map, start: Vector, end: Position)
 }
 
 pub fn parse(input: String) -> Scenario {
@@ -79,11 +78,20 @@ pub fn parse(input: String) -> Scenario {
       )
     })
 
-  Scenario(reindeer: Vector(position: start, direction: East), map:, end:)
+  Scenario(map:, start: Vector(position: start, direction: East), end:)
 }
 
 type Node {
-  Node(parent: Option(Node), g: Int, f: Int)
+  Node(
+    searched: Bool,
+    neighbours: List(Vector),
+    running_path_cost: Int,
+    total_path_cost_estimate: Int,
+  )
+}
+
+type Solution {
+  Solution(cost: Int, paths: List(List(Vector)))
 }
 
 fn get_entity(scenario: Scenario, position: Position) -> Entity {
@@ -97,7 +105,7 @@ fn calculate_heuristic(scenario: Scenario, vector: Vector) -> Int {
   + int.absolute_value(vector.position.y - scenario.end.y)
 }
 
-fn get_neighbours(scenario: Scenario, vector: Vector) -> Set(#(Vector, Int)) {
+fn get_neighbours(vector: Vector) -> Set(#(Vector, Int)) {
   set.new()
   |> set.insert(#(
     Vector(
@@ -137,106 +145,151 @@ fn get_neighbours(scenario: Scenario, vector: Vector) -> Set(#(Vector, Int)) {
   ))
 }
 
-fn solve_inner(
-  scenario: Scenario,
-  open: Dict(Vector, Node),
-  closed: Set(Vector),
-) {
-  let assert Some(#(vector, node)) =
-    open
+fn get_all_paths(
+  nodes: Dict(Vector, Node),
+  vector: Vector,
+) -> List(List(Vector)) {
+  let assert Ok(node) = nodes |> dict.get(vector)
+
+  case node.neighbours {
+    [] -> [[vector]]
+    _ ->
+      node.neighbours
+      |> list.map(fn(neighbour) {
+        get_all_paths(nodes, neighbour)
+        |> list.map(fn(path) { [vector, ..path] })
+      })
+      |> list.flatten()
+  }
+}
+
+fn get_cheapest_estimate(nodes: Dict(Vector, Node)) -> #(Vector, Node) {
+  let assert Some(entry) =
+    nodes
     |> dict.fold(None, fn(acc: Option(#(Vector, Node)), vector, node) {
-      case acc {
-        None -> Some(#(vector, node))
-        Some(#(_, n)) -> {
-          case node.f < n.f {
+      case acc, node.searched {
+        None, False -> Some(#(vector, node))
+        Some(#(_, n)), False -> {
+          case node.total_path_cost_estimate < n.total_path_cost_estimate {
             True -> Some(#(vector, node))
             False -> acc
           }
         }
+        _, True -> acc
       }
     })
+
+  entry
+}
+
+fn solve_inner(scenario: Scenario, nodes: Dict(Vector, Node)) -> Solution {
+  let #(vector, node) = nodes |> get_cheapest_estimate()
 
   let found_end = vector.position == scenario.end
 
   case found_end {
-    True -> {
-      node |> io.debug()
-      node.g
-    }
+    True ->
+      Solution(
+        cost: node.running_path_cost,
+        paths: nodes |> get_all_paths(vector),
+      )
     False -> {
-      let new_open = open |> dict.delete(vector)
-      let new_closed = closed |> set.insert(vector)
+      let nodes = nodes |> dict.insert(vector, Node(..node, searched: True))
 
-      let neighbours = get_neighbours(scenario, vector)
+      let neighbours = get_neighbours(vector)
 
-      let new_open =
+      let nodes =
         neighbours
-        |> set.fold(new_open, fn(acc, neighbour_entry) {
+        |> set.fold(nodes, fn(acc, neighbour_entry) {
           let #(neighbour, cost) = neighbour_entry
-          let is_closed = new_closed |> set.contains(neighbour)
-          let is_empty = scenario |> get_entity(neighbour.position) == Empty
+          let entity = get_entity(scenario, neighbour.position)
 
-          case !is_closed && is_empty {
-            False -> acc
-            True -> {
-              let is_new_node = !{ acc |> dict.has_key(neighbour) }
-              case is_new_node {
-                True -> {
-                  acc
-                  |> dict.insert(
-                    neighbour,
-                    Node(
-                      parent: Some(node),
-                      g: node.g + cost,
-                      f: node.g + calculate_heuristic(scenario, neighbour),
-                    ),
+          case entity {
+            Wall -> acc
+            Empty -> {
+              let neighour_node = acc |> dict.get(neighbour)
+              let new_neighour_node = case neighour_node {
+                Error(_) ->
+                  Node(
+                    searched: False,
+                    neighbours: [vector],
+                    running_path_cost: node.running_path_cost + cost,
+                    total_path_cost_estimate: node.running_path_cost
+                      + cost
+                      + calculate_heuristic(scenario, neighbour),
                   )
-                }
-                False -> {
-                  let assert Ok(existing_node) = acc |> dict.get(neighbour)
-                  let is_shorter_path = existing_node.g > node.g + cost
-                  case is_shorter_path {
-                    False -> acc
-                    True -> {
-                      acc
-                      |> dict.insert(
-                        neighbour,
-                        Node(
-                          parent: Some(node),
-                          g: node.g + cost,
-                          f: node.g + calculate_heuristic(scenario, neighbour),
-                        ),
+                Ok(existing_neighbour_node) -> {
+                  case
+                    int.compare(
+                      node.running_path_cost + cost,
+                      existing_neighbour_node.running_path_cost,
+                    )
+                  {
+                    order.Lt -> {
+                      Node(
+                        ..existing_neighbour_node,
+                        neighbours: [vector],
+                        running_path_cost: node.running_path_cost + cost,
+                        total_path_cost_estimate: node.running_path_cost
+                          + cost
+                          + calculate_heuristic(scenario, neighbour),
                       )
+                    }
+                    order.Eq -> {
+                      Node(
+                        ..existing_neighbour_node,
+                        neighbours: [
+                          vector,
+                          ..existing_neighbour_node.neighbours
+                        ],
+                      )
+                    }
+                    order.Gt -> {
+                      existing_neighbour_node
                     }
                   }
                 }
               }
+
+              acc |> dict.insert(neighbour, new_neighour_node)
             }
           }
         })
 
-      solve_inner(scenario, new_open, new_closed)
+      solve_inner(scenario, nodes)
     }
   }
 }
 
-fn solve(scenario: Scenario) -> Int {
-  let initial_heuristic = calculate_heuristic(scenario, scenario.reindeer)
+fn solve(scenario: Scenario) {
   solve_inner(
     scenario,
     dict.new()
       |> dict.insert(
-        scenario.reindeer,
-        Node(parent: None, g: 0, f: initial_heuristic),
+        scenario.start,
+        Node(
+          searched: False,
+          neighbours: [],
+          running_path_cost: 0,
+          total_path_cost_estimate: calculate_heuristic(
+            scenario,
+            scenario.start,
+          ),
+        ),
       ),
-    set.new(),
   )
 }
 
 pub fn pt_1(input: Scenario) {
-  input |> solve() |> io.debug()
+  let solution = input |> solve()
+  solution.cost
 }
 
 pub fn pt_2(input: Scenario) {
-  todo as "part 2 not implemented"
+  let solution = input |> solve()
+  solution.paths
+  |> list.flatten()
+  |> list.map(fn(vector) { vector.position })
+  |> list.unique()
+  |> list.length()
 }
